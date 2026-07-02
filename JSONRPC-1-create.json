@@ -1,0 +1,10 @@
+{
+    "method": "create",
+    "params": {
+        "tunnelName": "wg0",
+        "listenPort": 51280,
+        "privateKey": "YOdXSeVOxKPnw8ty7/Ls2AuuyDo3AGYP0PhV6tewr1M="
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+}

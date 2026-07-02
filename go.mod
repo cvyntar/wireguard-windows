@@ -3,6 +3,7 @@ module golang.zx2c4.com/wireguard/windows
 go 1.25.0
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/lxn/walk v0.0.0-20210112085537-c389da54e794
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e
 	golang.org/x/crypto v0.50.0
@@ -12,6 +13,7 @@ require (
 )
 
 require (
+	github.com/sourcegraph/jsonrpc2 v0.2.1
 	golang.org/x/mod v0.34.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/tools v0.43.0 // indirect

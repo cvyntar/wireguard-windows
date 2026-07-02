@@ -1,0 +1,29 @@
+{
+    "method": "create",
+    "params": {
+        "tunnelName": "wg0",
+        "listenPort": 51280,
+        "privateKey": "YOdXSeVOxKPnw8ty7/Ls2AuuyDo3AGYP0PhV6tewr1M=",
+        "addresses": [
+            "10.0.0.1/32"
+        ],
+        "peers": [
+            {
+                "publicKey": "V5UDIlVATpoaIeqFo3Vsn7YmdJj7lXE4wfLCVkRhaTs=",
+                "allowedIPs": [
+                    "10.0.0.2/32"
+                ],
+                "endpoint": "192.168.254.148:51280"
+            },
+            {
+                "publicKey": "E1yYWin1KbwetAdRq2Dyigwv4oSGCWLbDUQnx1yYo93q",
+                "allowedIPs": [
+                    "10.0.0.3/32"
+                ],
+                "endpoint": "192.168.254.20:51280"
+            }
+        ]
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+}

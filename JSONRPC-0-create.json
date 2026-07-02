@@ -1,0 +1,8 @@
+{
+    "method": "create",
+    "params": {
+        "tunnelName": "wg0"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+}

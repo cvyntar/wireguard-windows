@@ -7,10 +7,16 @@ package manager
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/gob"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/netip"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -21,7 +27,211 @@ import (
 
 	"golang.zx2c4.com/wireguard/windows/conf"
 	"golang.zx2c4.com/wireguard/windows/updater"
+
+	"github.com/Microsoft/go-winio"
+	"github.com/sourcegraph/jsonrpc2"
 )
+
+type peerDto struct {
+	PublicKey  string   `json:"publicKey"`
+	AllowedIPs []string `json:"allowedIPs"`
+	Endpoint   string   `json:"endpoint"`
+}
+
+type rpcHandler struct {
+	wrap *ManagerService
+}
+
+func mapAddresses(strings []string) ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, 0, len(strings))
+	for _, s := range strings {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return nil, err
+		}
+		prefixes = append(prefixes, p)
+	}
+	return prefixes, nil
+}
+
+func mapPeers(dto []peerDto) ([]conf.Peer, error) {
+	result := make([]conf.Peer, 0, len(dto))
+	for _, s := range dto {
+		allowedIPs, parseAllowedIPsErr := parseAllowedIPs(s.AllowedIPs)
+		if parseAllowedIPsErr != nil {
+			return nil, parseAllowedIPsErr
+		}
+
+		endpoint, parseEndpointErr := parseEndpoint(s.Endpoint)
+		if parseEndpointErr != nil {
+			return nil, parseEndpointErr
+		}
+
+		publicKeyBytes, parsePublicKeyErr := base64.StdEncoding.DecodeString(s.PublicKey)
+		if parsePublicKeyErr != nil {
+			return nil, parsePublicKeyErr
+		}
+		var publicKey conf.Key
+		copy(publicKey[:], publicKeyBytes)
+
+		result = append(result, conf.Peer{
+			PublicKey:  publicKey,
+			AllowedIPs: allowedIPs,
+			Endpoint:   endpoint,
+		})
+	}
+	return result, nil
+}
+
+func parseAllowedIPs(ips []string) ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, len(ips))
+
+	for i, ip := range ips {
+		prefix, err := netip.ParsePrefix(ip)
+		if err != nil {
+			return nil, err
+		}
+		prefixes[i] = prefix
+	}
+
+	return prefixes, nil
+}
+
+func parseEndpoint(s string) (conf.Endpoint, error) {
+	addr, err := netip.ParseAddrPort(s)
+	if err != nil {
+		return conf.Endpoint{}, err
+	}
+
+	return conf.Endpoint{
+		Host: addr.Addr().String(),
+		Port: addr.Port(),
+	}, nil
+}
+
+func (self *rpcHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+	//
+	if req.Notif {
+		log.Printf("Отримано нотифікацію: метод=%s, параметри=%s", req.Method, string(*req.Params))
+		return // Згідно зі специфікацією JSON-RPC 2.0, відповідь не надсилається
+	} else {
+		log.Printf("Отримано RPC call: метод=%s, параметри=%s", req.Method, string(*req.Params))
+	}
+
+	switch req.Method {
+	case "create":
+		var params struct {
+			TunnelName string    `json:"tunnelName"`
+			ListenPort uint16    `json:"listenPort"`
+			PrivateKey string    `json:"privateKey"`
+			Addresses  []string  `json:"addresses"`
+			Peers      []peerDto `json:"peers"`
+		}
+		if err := json.Unmarshal(*req.Params, &params); err != nil {
+			errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: err.Error()}
+			conn.ReplyWithError(ctx, req.ID, errObj)
+			return
+		}
+		addresses, err := mapAddresses(params.Addresses)
+		if err != nil {
+			errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: err.Error()}
+			conn.ReplyWithError(ctx, req.ID, errObj)
+			return
+		}
+		peers, parsePeersErr := mapPeers(params.Peers)
+		if parsePeersErr != nil {
+			errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: parsePeersErr.Error()}
+			conn.ReplyWithError(ctx, req.ID, errObj)
+			return
+		}
+
+		privateKeyBytes, parsePrivateKeyErr := base64.StdEncoding.DecodeString(params.PrivateKey)
+		if parsePrivateKeyErr != nil {
+			errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: parsePrivateKeyErr.Error()}
+			conn.ReplyWithError(ctx, req.ID, errObj)
+			return
+		}
+		var privateKey conf.Key
+		copy(privateKey[:], privateKeyBytes)
+
+		tunnelConfig := conf.Config{
+			Name: params.TunnelName,
+			Interface: conf.Interface{
+				PrivateKey: privateKey,
+				ListenPort: params.ListenPort,
+				Addresses:  addresses,
+			},
+			Peers: peers,
+		}
+
+		if _, retErr := self.wrap.Create(&tunnelConfig); retErr != nil {
+			errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeInternalError, Message: retErr.Error()}
+			conn.ReplyWithError(ctx, req.ID, errObj)
+			return
+		}
+		if err := conn.Reply(ctx, req.ID, nil); err != nil {
+			log.Printf("Failed to JSON-RPC reply: %v", err)
+			return
+		}
+	case "start":
+		var params struct {
+			TunnelName string `json:"tunnelName"`
+		}
+		if err := json.Unmarshal(*req.Params, &params); err != nil {
+			errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: err.Error()}
+			conn.ReplyWithError(ctx, req.ID, errObj)
+			return
+		}
+		if retErr := self.wrap.Start(params.TunnelName); retErr != nil {
+			errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeInternalError, Message: retErr.Error()}
+			conn.ReplyWithError(ctx, req.ID, errObj)
+			return
+		}
+		if err := conn.Reply(ctx, req.ID, nil); err != nil {
+			log.Printf("Failed to JSON-RPC reply: %v", err)
+			return
+		}
+	case "stop":
+		var params struct {
+			TunnelName string `json:"tunnelName"`
+		}
+		if err := json.Unmarshal(*req.Params, &params); err != nil {
+			errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: err.Error()}
+			conn.ReplyWithError(ctx, req.ID, errObj)
+			return
+		}
+		if retErr := self.wrap.WaitForStop(params.TunnelName); retErr != nil {
+			errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeInternalError, Message: retErr.Error()}
+			conn.ReplyWithError(ctx, req.ID, errObj)
+			return
+		}
+		if err := conn.Reply(ctx, req.ID, nil); err != nil {
+			log.Printf("Failed to JSON-RPC reply: %v", err)
+			return
+		}
+	case "delete":
+		var params struct {
+			TunnelName string `json:"tunnelName"`
+		}
+		if err := json.Unmarshal(*req.Params, &params); err != nil {
+			errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: err.Error()}
+			conn.ReplyWithError(ctx, req.ID, errObj)
+			return
+		}
+		if retErr := self.wrap.Delete(params.TunnelName); retErr != nil {
+			errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeInternalError, Message: retErr.Error()}
+			conn.ReplyWithError(ctx, req.ID, errObj)
+			return
+		}
+		if err := conn.Reply(ctx, req.ID, nil); err != nil {
+			log.Printf("Failed to JSON-RPC reply: %v", err)
+			return
+		}
+	default:
+		errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeMethodNotFound, Message: "Method not found"}
+		conn.ReplyWithError(ctx, req.ID, errObj)
+	}
+}
 
 var (
 	managerServices     = make(map[*ManagerService]bool)
@@ -453,7 +663,74 @@ func IPCServerListen(reader, writer, events *os.File, elevatedToken windows.Toke
 		managerServicesLock.Lock()
 		managerServices[service] = true
 		managerServicesLock.Unlock()
+		runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
+
+		go func(ctx context.Context, service *ManagerService) {
+			pipePath := `\\.\pipe\graicc\wiregurd-manager-jsonrpc`
+
+			config := &winio.PipeConfig{
+				SecurityDescriptor: "D:P(A;;GA;;;WD)",
+			}
+
+			listener, err := winio.ListenPipe(pipePath, config)
+			if err != nil {
+				log.Printf("Помилка запуску JSON-RPC сервера: %v", err)
+				return
+			}
+
+			go func() {
+				<-ctx.Done()
+				listener.Close()
+			}()
+
+			for {
+				conn, err := listener.Accept()
+				if err != nil {
+					// Перевірка, чи закриття викликане скасуванням контексту
+					if errors.Is(err, net.ErrClosed) {
+						log.Println("JSON-RPC сервер зупинено через скасування контексту")
+						return
+					}
+					log.Printf("Помилка accept у JSON-RPC сервері: %v", err)
+					continue
+				}
+				log.Printf("JSON-RPC client connection opened")
+
+				go func(conn net.Conn) {
+					defer conn.Close()
+
+					jsonrpc2ObjectStream := jsonrpc2.NewPlainObjectStream(conn)
+					defer jsonrpc2ObjectStream.Close()
+
+					jsonrpc2Conn := jsonrpc2.NewConn(ctx, jsonrpc2ObjectStream, &rpcHandler{
+						wrap: service,
+					})
+					defer jsonrpc2Conn.Close()
+
+					ticker := time.NewTicker(2 * time.Hour)
+					defer ticker.Stop()
+
+					for {
+						select {
+						case <-ticker.C:
+							notificationParams := map[string]string{"status": "periodic_update"}
+							err := jsonrpc2Conn.Notify(ctx, "server_notification", notificationParams)
+							if err != nil {
+								log.Printf("Помилка відправки нотифікації (можливо клієнт відключився): %v", err)
+								return
+							}
+							// conn.Write([]byte("Hello\n"))
+						case <-ctx.Done():
+							log.Printf("JSON-RPC client connection close")
+							return
+						}
+					}
+				}(conn)
+			}
+		}(runtimeCtx, service)
+
 		service.ServeConn(reader, writer)
+		runtimeCancel()
 		managerServicesLock.Lock()
 		service.eventLock.Lock()
 		service.events = nil
