@@ -111,11 +111,19 @@ func parseEndpoint(s string) (conf.Endpoint, error) {
 
 func (self *rpcHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
 	//
-	if req.Notif {
-		log.Printf("Отримано нотифікацію: метод=%s, параметри=%s", req.Method, string(*req.Params))
-		return // Згідно зі специфікацією JSON-RPC 2.0, відповідь не надсилається
-	} else {
-		log.Printf("Отримано RPC call: метод=%s, параметри=%s", req.Method, string(*req.Params))
+	{
+		var paramsStr string
+		if req.Params != nil {
+			paramsStr = string(*req.Params)
+		} else {
+			paramsStr = "null"
+		}
+		if req.Notif {
+			log.Printf("Отримано нотифікацію: метод=%s, параметри=%s", req.Method, paramsStr)
+			return // Згідно зі специфікацією JSON-RPC 2.0, відповідь не надсилається
+		} else {
+			log.Printf("Отримано RPC call: метод=%s, параметри=%s", req.Method, paramsStr)
+		}
 	}
 
 	switch req.Method {
@@ -169,6 +177,7 @@ func (self *rpcHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *js
 			conn.ReplyWithError(ctx, req.ID, errObj)
 			return
 		}
+
 		if err := conn.Reply(ctx, req.ID, nil); err != nil {
 			log.Printf("Failed to JSON-RPC reply: %v", err)
 			return
@@ -224,6 +233,17 @@ func (self *rpcHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *js
 			return
 		}
 		if err := conn.Reply(ctx, req.ID, nil); err != nil {
+			log.Printf("Failed to JSON-RPC reply: %v", err)
+			return
+		}
+	case "list":
+		names, err := conf.ListConfigNames()
+		if err != nil {
+			errObj := &jsonrpc2.Error{Code: jsonrpc2.CodeInternalError, Message: err.Error()}
+			conn.ReplyWithError(ctx, req.ID, errObj)
+			return
+		}
+		if err := conn.Reply(ctx, req.ID, names); err != nil {
 			log.Printf("Failed to JSON-RPC reply: %v", err)
 			return
 		}
@@ -669,6 +689,11 @@ func IPCServerListen(reader, writer, events *os.File, elevatedToken windows.Toke
 			pipePath := `\\.\pipe\graicc\wiregurd-manager-jsonrpc`
 
 			config := &winio.PipeConfig{
+				MessageMode:      true, // Вмикає режим повідомлень (PIPE_TYPE_MESSAGE / PIPE_READMODE_MESSAGE)
+				InputBufferSize:  4096,
+				OutputBufferSize: 4096,
+				// Цей рядок є записом у форматі SDDL (Security Descriptor Definition Language), який визначає права доступу до Named Pipe в ОС Windows.s
+				// Цей рядок надає повний доступ до Named Pipe для будь-якого процесу чи користувача в системі.
 				SecurityDescriptor: "D:P(A;;GA;;;WD)",
 			}
 

@@ -1,6 +1,18 @@
 # JSON-RPC Endpoint
 
+## Cleanup
+
+```ps
+.\amd64\wireguard.exe /uninstallmanagerservice
+Remove-Item -Path "C:\Program Files\WireGuard" -Recurse -Force
+
+```
+
+## Named Pipe Terminal
+
+```ps
 "C:\Program Files\PuTTY\plink.exe" -serial \\.\pipe\graicc\wiregurd-manager-jsonrpc
+```
 
 ## Create or Update tunnel
 
@@ -23,13 +35,13 @@ Request:
 Response Success:
 
 ```json
-{"result":"null","id":1,"jsonrpc":"2.0"}
+{"result":null,"id":1,"jsonrpc":"2.0"}
 ```
 
 Response Error:
 
 ```json
-{"error":{"code":-32603,"message":"open C:\\Program Files\\WireGuard\\Data\\Configurations\\wg0.conf.dpapi: The system cannot find the file specified."},"id":1,"jsonrpc":"2.0"}
+{"error":{"code":-32603,"message":"Access is denied."},"id":"1","jsonrpc":"2.0"}
 ```
 
 ## Start tunnel
@@ -43,7 +55,7 @@ Request:
 Response Success:
 
 ```json
-{"result":"null","id":1,"jsonrpc":"2.0"}
+{"result":null,"id":1,"jsonrpc":"2.0"}
 ```
 
 Response Error:
@@ -63,7 +75,7 @@ Request:
 Response Success:
 
 ```json
-{"result":"null","id":1,"jsonrpc":"2.0"}
+{"result":null,"id":1,"jsonrpc":"2.0"}
 ```
 
 Response Error:
@@ -83,7 +95,27 @@ Request:
 Response Success:
 
 ```json
-{"result":"null","id":1,"jsonrpc":"2.0"}
+{"result":null,"id":1,"jsonrpc":"2.0"}
+```
+
+Response Error:
+
+```json
+TBD
+```
+
+## List tunnels
+
+Request:
+
+```json
+{"method":"list","id":1,"jsonrpc":"2.0"}
+```
+
+Response Success:
+
+```json
+{"result":null,"id":1,"jsonrpc":"2.0"}
 ```
 
 Response Error:
